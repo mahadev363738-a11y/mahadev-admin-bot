@@ -222,7 +222,10 @@ def main():
     print("Initializing Telegram Bot...")
     if PROXY_URL:
         print(f"Using Proxy: {PROXY_URL}")
-        request = HTTPXRequest(proxy_url=PROXY_URL)
+        try:
+            request = HTTPXRequest(proxy_url=PROXY_URL)
+        except TypeError:
+            request = HTTPXRequest(proxy=PROXY_URL)
         app = Application.builder().token(BOT_TOKEN).request(request).build()
     else:
         app = Application.builder().token(BOT_TOKEN).build()
