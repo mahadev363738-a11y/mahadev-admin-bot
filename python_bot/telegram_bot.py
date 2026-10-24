@@ -11,8 +11,16 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+from telegram.request import HTTPXRequest
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+
+# Auto-detect PythonAnywhere proxy to fix 503 ProxyError
+PROXY_URL = os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
+if not PROXY_URL:
+    home_dir = os.environ.get("HOME", "")
+    if "mahadev" in home_dir or "pythonanywhere" in home_dir or os.path.exists("/home/mahadev123"):
+        PROXY_URL = "http://proxy.server:3128"
 
 DEVICE_KEYS = {
     "device", "devices", "deviceid", "device_id",
@@ -44,10 +52,15 @@ def fetch_database(url):
     url = url.strip().rstrip("/")
     endpoint = url + "/.json"
 
+    proxies = None
+    if PROXY_URL:
+        proxies = {"http": PROXY_URL, "https": PROXY_URL}
+
     response = requests.get(
         endpoint,
         timeout=15,
         headers={"Accept": "application/json"},
+        proxies=proxies,
     )
 
     if response.status_code in (401, 403):
@@ -206,7 +219,13 @@ def main():
         print("ERROR: TELEGRAM_BOT_TOKEN environment variable set karo!")
         return
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    print("Initializing Telegram Bot...")
+    if PROXY_URL:
+        print(f"Using Proxy: {PROXY_URL}")
+        request = HTTPXRequest(proxy_url=PROXY_URL)
+        app = Application.builder().token(BOT_TOKEN).request(request).build()
+    else:
+        app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("scan", scan))
