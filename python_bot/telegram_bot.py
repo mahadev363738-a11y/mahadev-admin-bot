@@ -15,7 +15,7 @@ from telegram.request import HTTPXRequest
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 
-# Auto-detect PythonAnywhere proxy to fix 503 ProxyError
+# Auto-detect PythonAnywhere proxy
 PROXY_URL = os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
 if not PROXY_URL:
     home_dir = os.environ.get("HOME", "")
@@ -26,6 +26,7 @@ DEVICE_KEYS = {
     "device", "devices", "deviceid", "device_id",
     "model", "battery", "status", "lastseen",
     "last_seen", "manufacturer", "platform",
+    "sim", "sim1", "sim2", "number", "phone", "bank"
 }
 
 def valid_firebase_url(url):
@@ -65,7 +66,7 @@ def fetch_database(url):
 
     if response.status_code in (401, 403):
         raise PermissionError(
-            "Database private hai ya read permission nahi hai."
+            "Database private hai ya read permission nahi hai (.read: false)."
         )
 
     response.raise_for_status()
@@ -82,32 +83,25 @@ def find_records(data, path="$", depth=0, results=None):
     if results is None:
         results = []
 
-    if depth > 8 or len(results) >= 30:
+    if depth > 10 or len(results) >= 50:
         return results
 
     if isinstance(data, dict):
         normalized_keys = {
-            str(key).lower().replace("-", "").replace(" ", "")
+            str(key).lower().replace("-", "").replace(" ", "").replace("_", "")
             for key in data
         }
 
         device_like = (
             any(
-                key in normalized_keys
-                for key in ("device", "devices", "deviceid", "device_id")
-            )
-            or any(
-                key.replace("_", "") in {
-                    "model", "battery", "manufacturer",
-                    "lastseen", "platform"
-                }
-                for key in normalized_keys
+                k in normalized_keys
+                for k in ("device", "devices", "deviceid", "model", "battery", "status", "sim", "sim1", "number", "phone")
             )
         )
 
         if device_like:
             results.append((path, data))
-            if len(results) >= 30:
+            if len(results) >= 50:
                 return results
 
         for key, value in data.items():
@@ -116,21 +110,44 @@ def find_records(data, path="$", depth=0, results=None):
 
     elif isinstance(data, list):
         for index, value in enumerate(data):
-            find_records(
-                value, f"{path}/{index}", depth + 1, results
-            )
+            find_records(value, f"{path}/{index}", depth + 1, results)
 
     return results
 
 
+def format_record(data, max_lines=25):
+    lines = []
+
+    def _recurse(obj, prefix=""):
+        if len(lines) >= max_lines:
+            return
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if len(lines) >= max_lines:
+                    break
+                if isinstance(v, (str, int, float, bool)):
+                    lines.append(f"{prefix}{k}: {v}")
+                elif isinstance(v, dict):
+                    lines.append(f"{prefix}{k}:")
+                    _recurse(v, prefix + "  ")
+                elif isinstance(v, list):
+                    val_str = ", ".join(map(str, v))[:100]
+                    lines.append(f"{prefix}{k}: [{val_str}]")
+        elif isinstance(obj, (str, int, float, bool)):
+            lines.append(f"{prefix}{obj}")
+
+    _recurse(data)
+    return lines
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 Firebase Device Inspector\n\n"
-        "Apne authorized Firebase Realtime Database ka "
-        "HTTPS URL bhejo.\n\n"
-        "Example command:\n"
-        "/scan https://YOUR-PROJECT-default-rtdb.firebaseio.com\n\n"
-        "Sirf URL se private database access nahi milega."
+        "🤖 MAHADEV ADMIN - Firebase Inspector\n\n"
+        "Apne Firebase Realtime Database ka HTTPS URL bhejo.\n\n"
+        "Example:\n"
+        "https://YOUR-PROJECT-default-rtdb.firebaseio.com\n\n"
+        "Ya command:\n"
+        "/scan https://YOUR-PROJECT-default-rtdb.firebaseio.com"
     )
 
 
@@ -149,7 +166,7 @@ async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    await update.message.reply_text("🔎 Database check ho raha hai...")
+    await update.message.reply_text("🔎 Database scan ho raha hai...")
 
     try:
         data = await asyncio.to_thread(fetch_database, url)
@@ -163,40 +180,44 @@ async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         records = find_records(data)
 
         if not records:
-            await update.message.reply_text(
-                "Readable data mila, lekin common device fields "
-                "detect nahi hue. Database ka structure check karo."
-            )
+            # If no device-like key found, show root data summary
+            if isinstance(data, dict):
+                lines = ["📱 Root Database Structure:"]
+                for k, v in list(data.items())[:10]:
+                    if isinstance(v, dict):
+                        lines.append(f"📁 /{k} ({len(v)} sub-items)")
+                    else:
+                        lines.append(f"📄 {k}: {str(v)[:100]}")
+                await update.message.reply_text("\n".join(lines))
+            else:
+                await update.message.reply_text(
+                    "Database readable hai lekin device structure recognize nahi hua."
+                )
             return
 
-        for path, record in records[:10]:
-            lines = [f"📱 Record path: {path}"]
-
-            for key, value in list(record.items())[:15]:
-                if isinstance(value, (str, int, float, bool)):
-                    text = str(value)[:150]
-                    lines.append(f"{key}: {text}")
-
-            await update.message.reply_text("\n".join(lines))
+        for path, record in records[:15]:
+            formatted_lines = format_record(record)
+            msg_text = f"📱 Record path: {path}\n" + "\n".join(formatted_lines)
+            await update.message.reply_text(msg_text)
 
     except PermissionError as exc:
         await update.message.reply_text(
-            f"🔒 {exc}\n"
-            "Apne project mein Firebase Authentication ya "
-            "authorized service-account access configure karo."
+            f"🔒 {exc}\n\n"
+            "Firebase Console -> Realtime Database -> Rules me check karein:\n"
+            '{\n  "rules": {\n    ".read": true,\n    ".write": true\n  }\n}'
         )
-    except requests.RequestException:
+    except requests.RequestException as exc:
         await update.message.reply_text(
-            "Network ya HTTP error. Firebase URL check karo."
+            f"Network ya HTTP error: {str(exc)[:150]}"
         )
     except (ValueError, TypeError) as exc:
         await update.message.reply_text(
-            f"Database response samajh nahi aaya: {str(exc)[:200]}"
+            f"Database response error: {str(exc)[:200]}"
         )
     except Exception as exc:
         print("Error:", repr(exc))
         await update.message.reply_text(
-            "Unexpected error occurred."
+            f"Unexpected error: {str(exc)[:150]}"
         )
 
 
@@ -205,8 +226,8 @@ async def receive_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not valid_firebase_url(url):
         await update.message.reply_text(
-            "Firebase URL samajh nahi aaya.\n"
-            "URL ko /scan ke saath bhejo."
+            "Valid Firebase URL bhejo.\n"
+            "Example: https://YOUR-PROJECT-default-rtdb.firebaseio.com"
         )
         return
 
